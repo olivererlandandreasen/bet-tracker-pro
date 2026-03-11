@@ -67,7 +67,7 @@ export async function POST(req: NextRequest) {
 
         if (!token || !process.env.OPENAI_API_KEY) {
             await sendTelegramMessage(chatId, "System error: API keys are not fully configured.");
-            return NextResponse.json({ error: "Missing keys" }, { status: 500 });
+            return NextResponse.json({ error: "Missing keys" }, { status: 200 });
         }
 
         await sendTelegramMessage(chatId, "Analyzing screenshot... ✨");
@@ -163,6 +163,6 @@ Check your dashboard to view the pending bet!`;
         if (chatIdForError) {
             await sendTelegramMessage(chatIdForError, `❌ Fejl: Noget gik galt under behandlingen af dit screenshot (\`${error.message}\`). Prøv venligst igen!`);
         }
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        return NextResponse.json({ error: error.message }, { status: 200 });
     }
 }
