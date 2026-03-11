@@ -1,48 +1,131 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
-import styles from "./page.module.css";
+import { useEffect, useState, useRef, useCallback } from "react";
+import s from "./page.module.css";
 import type { Bet } from "@prisma/client";
 import { BetSelection } from "@/lib/db";
 
-type BetWithMeta = Bet & { sport?: string; market?: string; profit?: number };
+type BetFull = Bet & { sport?: string; market?: string; profit?: number };
+type StatusFilter = "all" | "pending" | "won" | "lost";
+
+// Sport emoji map
+const SPORT_ICON: Record<string, string> = {
+  "Horse Racing": "🏇",
+  "Football": "⚽",
+  "Tennis": "🎾",
+  "Basketball": "🏀",
+  "Golf": "⛳",
+  "Cricket": "🏏",
+  "Other": "🎯",
+};
+
+// Simple SVG P&L chart
+function PnlChart({ bets }: { bets: BetFull[] }) {
+  const settled = [...bets]
+    .filter(b => b.status === "won" || b.status === "lost")
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  if (settled.length < 2) {
+    return (
+      <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <span style={{ color: "var(--text-3)", fontSize: "0.82rem" }}>
+          Not enough settled bets to draw a chart yet.
+        </span>
+      </div>
+    );
+  }
+
+  // Build cumulative series
+  let cum = 0;
+  const series = settled.map(b => {
+    const p = b.profit ?? (b.status === "won" ? b.potential_return - b.stake : -b.stake);
+    cum += p;
+    return cum;
+  });
+
+  const W = 1000; // viewBox width
+  const H = 120;
+  const pad = 8;
+  const minV = Math.min(0, ...series);
+  const maxV = Math.max(0, ...series);
+  const range = maxV - minV || 1;
+
+  const toX = (i: number) => pad + (i / (series.length - 1)) * (W - pad * 2);
+  const toY = (v: number) => H - pad - ((v - minV) / range) * (H - pad * 2);
+
+  const points = series.map((v, i) => `${toX(i)},${toY(v)}`).join(" ");
+  const zeroY = toY(0);
+  const last = series[series.length - 1];
+  const lineColor = last >= 0 ? "var(--green)" : "var(--red)";
+
+  // Area fill
+  const areaPoints = `${toX(0)},${zeroY} ${points} ${toX(series.length - 1)},${zeroY}`;
+
+  return (
+    <div className={s.chartWrap}>
+      <svg className={s.chartSvg} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={lineColor} stopOpacity="0.18" />
+            <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {/* Zero line */}
+        <line x1={pad} y1={zeroY} x2={W - pad} y2={zeroY}
+          stroke="rgba(255,255,255,0.08)" strokeWidth="1" strokeDasharray="4 4" />
+        {/* Area */}
+        <polygon points={areaPoints} fill="url(#areaFill)" />
+        {/* Line */}
+        <polyline points={points} fill="none" stroke={lineColor} strokeWidth="2.5"
+          strokeLinejoin="round" strokeLinecap="round" />
+        {/* Last dot */}
+        <circle cx={toX(series.length - 1)} cy={toY(last)} r="4"
+          fill={lineColor} stroke="var(--surface)" strokeWidth="2" />
+      </svg>
+    </div>
+  );
+}
 
 export default function Home() {
-  const [bets, setBets] = useState<BetWithMeta[]>([]);
+  const [bets, setBets] = useState<BetFull[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [sportFilter, setSportFilter] = useState("All");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchBets = async () => {
+  const fetchBets = useCallback(async () => {
     try {
       const res = await fetch("/api/bets");
       const data = await res.json();
       if (data.bets) setBets(data.bets);
-    } catch (error) {
-      console.error("Failed to fetch bets:", error);
+    } catch (e) {
+      console.error("Failed to fetch bets:", e);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { fetchBets(); }, []);
+  useEffect(() => { fetchBets(); }, [fetchBets]);
 
   const handleUpload = async (file: File) => {
     setUploading(true);
-    const formData = new FormData();
-    formData.append("image", file);
+    const fd = new FormData();
+    fd.append("image", file);
     try {
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      const res = await fetch("/api/upload", { method: "POST", body: fd });
       const data = await res.json();
       if (data.error) alert("Upload failed: " + data.error);
       else await fetchBets();
-    } catch (error) {
-      console.error("Upload error:", error);
-      alert("Something went wrong during upload.");
+    } catch (e) {
+      console.error("Upload error:", e);
     } finally {
       setUploading(false);
     }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.[0]) handleUpload(e.target.files[0]);
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -50,227 +133,274 @@ export default function Home() {
     if (e.dataTransfer.files?.[0]) handleUpload(e.dataTransfer.files[0]);
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.[0]) handleUpload(e.target.files[0]);
+  const updateStatus = async (id: string, status: "won" | "lost") => {
+    const bet = bets.find(b => b.id === id);
+    if (!bet) return;
+    // Optimistic
+    setBets(prev => prev.map(b => b.id === id ? {
+      ...b, status,
+      profit: status === "won" ? b.potential_return - b.stake : -b.stake
+    } : b));
+    await fetch(`/api/bets/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
   };
 
-  const updateBetStatus = async (id: string, status: 'won' | 'lost' | 'void') => {
-    try {
-      const res = await fetch(`/api/bets/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
-      });
-      if (res.ok) setBets(bets.map(b => b.id === id ? { ...b, status } : b));
-    } catch (error) {
-      console.error("Failed to update status", error);
-    }
+  // ── Computed values ──────────────────────────────────────────
+  const settled = bets.filter(b => b.status === "won" || b.status === "lost");
+  const wins = bets.filter(b => b.status === "won").length;
+  const winRate = settled.length ? Math.round((wins / settled.length) * 100) : 0;
+
+  const totalProfit = settled.reduce((acc, b) =>
+    acc + (b.profit ?? (b.status === "won" ? b.potential_return - b.stake : -b.stake)), 0);
+
+  const totalInvested = settled.reduce((acc, b) => acc + b.stake, 0);
+  const roi = totalInvested > 0 ? totalProfit / totalInvested * 100 : 0;
+  const pending = bets.filter(b => b.status === "pending").length;
+
+  // ── Filters ──────────────────────────────────────────────────
+  const allSports = ["All", ...Array.from(new Set(bets.map(b => b.sport || "Other")))];
+
+  const filtered = bets.filter(b => {
+    const sp = sportFilter === "All" || (b.sport || "Other") === sportFilter;
+    const st = statusFilter === "all" || b.status === statusFilter;
+    return sp && st;
+  });
+
+  // ── Format helpers ───────────────────────────────────────────
+  const fmt = (n: number) => {
+    const abs = Math.abs(n);
+    return (n >= 0 ? "+" : "−") + abs.toFixed(0) + " kr";
   };
-
-  // ── Sport filter ──────────────────────────────────────────────
-  const allSports = ["All", ...Array.from(new Set(bets.map(b => b.sport || "Other").filter(Boolean)))];
-  const filteredBets = sportFilter === "All" ? bets : bets.filter(b => (b.sport || "Other") === sportFilter);
-
-  // ── Stats (over ALL bets, not filtered) ──────────────────────
-  const settledBets = bets.filter(b => b.status === "won" || b.status === "lost");
-  const winRate = settledBets.length
-    ? Math.round((bets.filter(b => b.status === "won").length / settledBets.length) * 100)
-    : 0;
-
-  const totalProfit = bets.reduce((acc, bet) => {
-    if (bet.status === "won" || bet.status === "lost") {
-      return acc + (bet.profit ?? (bet.status === "won" ? bet.potential_return - bet.stake : -bet.stake));
-    }
-    return acc;
-  }, 0);
-
-  const totalInvested = settledBets.reduce((acc, bet) => acc + bet.stake, 0);
-  const yieldPct = totalInvested > 0 ? ((totalProfit / totalInvested) * 100).toFixed(1) : 0;
-  const pendingCount = bets.filter(b => b.status === "pending").length;
-
-  // ── Per-sport breakdown ───────────────────────────────────────
-  const sportBreakdown = Array.from(new Set(bets.map(b => b.sport || "Other"))).map(sport => {
-    const group = bets.filter(b => (b.sport || "Other") === sport);
-    const settled = group.filter(b => b.status === "won" || b.status === "lost");
-    const wins = group.filter(b => b.status === "won").length;
-    const wr = settled.length ? Math.round((wins / settled.length) * 100) : null;
-    const profit = settled.reduce((acc, b) =>
-      acc + (b.profit ?? (b.status === "won" ? b.potential_return - b.stake : -b.stake)), 0);
-    return { sport, bets: group.length, wr, profit, settled: settled.length };
-  }).sort((a, b) => b.bets - a.bets);
 
   return (
-    <main className={styles.container}>
-      <header className={styles.header}>
-        <h1 className={`${styles.title} gradient-text`}>Bet Tracker Pro</h1>
-        <p className={styles.subtitle}>
-          Drop a screenshot of your betslip, and our AI will automatically parse
-          and track your performance. Manage your bets with effortless precision.
-        </p>
-      </header>
-
-      <div className={styles.dashboard}>
-        {/* Left Sidebar */}
-        <section className={styles.uploadSection}>
-          <div
-            className={`${styles.uploadBox} glass-panel`}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <input type="file" accept="image/*" hidden ref={fileInputRef} onChange={handleFileChange} />
-            {uploading ? (
-              <div className={styles.loader}>Analyzing screenshot... ✨</div>
-            ) : (
-              <>
-                <span className={styles.uploadIcon}>📸</span>
-                <div className={styles.uploadTitle}>Upload Screenshot</div>
-                <div className={styles.uploadDesc}>Drag and drop your betslip here,<br />or click to browse</div>
-              </>
-            )}
-          </div>
-
-          <div className={`${styles.statsGrid} glass-panel`}>
-            <div className={styles.statCard}>
-              <div className={styles.statLabel}>Total Profit</div>
-              <div className={`${styles.statValue} ${totalProfit >= 0 ? styles.positive : styles.negative}`}>
-                {totalProfit >= 0 ? '+' : ''}{totalProfit.toFixed(2)} kr
-              </div>
-            </div>
-            <div className={styles.statCard}>
-              <div className={styles.statLabel}>Win Rate</div>
-              <div className={styles.statValue}>{winRate}%</div>
-            </div>
-            <div className={styles.statCard}>
-              <div className={styles.statLabel}>Pending</div>
-              <div className={styles.statValue}>{pendingCount}</div>
-            </div>
-            <div className={styles.statCard}>
-              <div className={styles.statLabel}>Yield</div>
-              <div className={`${styles.statValue} ${Number(yieldPct) >= 0 ? styles.positive : styles.negative}`}>
-                {Number(yieldPct) >= 0 ? '+' : ''}{yieldPct}%
-              </div>
-            </div>
-          </div>
-
-          {/* Sport Performance Breakdown */}
-          {sportBreakdown.length > 0 && (
-            <div className={`glass-panel ${styles.breakdownPanel}`}>
-              <div className={styles.breakdownTitle}>Performance by Sport</div>
-              <table className={styles.breakdownTable}>
-                <thead>
-                  <tr>
-                    <th>Sport</th>
-                    <th>Bets</th>
-                    <th>W%</th>
-                    <th>Profit</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sportBreakdown.map(row => (
-                    <tr key={row.sport}>
-                      <td>{row.sport}</td>
-                      <td>{row.bets}</td>
-                      <td>{row.wr !== null ? `${row.wr}%` : '—'}</td>
-                      <td className={row.profit >= 0 ? styles.breakdownPositive : styles.breakdownNegative}>
-                        {row.profit >= 0 ? '+' : ''}{row.profit.toFixed(0)} kr
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
-        {/* Right Main — Recent Bets */}
-        <section className={`${styles.betsSection} glass-panel`}>
-          <div className={styles.sectionHeader}>
-            <h2 className={styles.sectionTitle}>Recent Bets</h2>
-          </div>
-
-          {/* Sport filter bar */}
-          {allSports.length > 1 && (
-            <div className={styles.filterBar}>
-              {allSports.map(sport => (
-                <button
-                  key={sport}
-                  className={`${styles.filterBtn} ${sportFilter === sport ? styles.filterBtnActive : ''}`}
-                  onClick={() => setSportFilter(sport)}
-                >
-                  {sport}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {loading ? (
-            <div className={styles.emptyState}>Loading your bets...</div>
-          ) : filteredBets.length === 0 ? (
-            <div className={styles.emptyState}>
-              <div className={styles.emptyIcon}>🎯</div>
-              <p>{bets.length === 0 ? "No bets tracked yet. Upload a screenshot to get started." : "No bets match the selected filter."}</p>
+    <div
+      className={s.app}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={handleDrop}
+    >
+      {/* ── Navbar ── */}
+      <nav className={s.navbar}>
+        <div className={s.navLogo}>
+          <span className={s.navLogoIcon}>📊</span>
+          <span className={s.navLogoText}>Bet Tracker <span>Pro</span></span>
+        </div>
+        <div className={s.navActions}>
+          <input
+            type="file"
+            accept="image/*"
+            hidden
+            ref={fileInputRef}
+            onChange={handleFileChange}
+          />
+          {uploading ? (
+            <div className={s.uploadingSpinner}>
+              <div className={s.spinner} />
+              Analyzing...
             </div>
           ) : (
-            <div className={styles.betsList}>
-              {filteredBets.map((bet) => (
-                <div key={bet.id} className={`${styles.betCard} ${styles[bet.status]}`}>
-                  <div className={styles.betHeader}>
-                    <div>
-                      <div className={styles.betDate}>{new Date(bet.date).toLocaleDateString()}</div>
-                      <div className={styles.metaBadges}>
-                        {bet.sport && bet.sport !== "Other" && (
-                          <span className={styles.sportBadge}>{bet.sport}</span>
-                        )}
-                        {bet.market && bet.market !== "Other" && (
-                          <span className={styles.marketBadge}>{bet.market}</span>
-                        )}
-                      </div>
+            <button className={s.uploadBtn} onClick={() => fileInputRef.current?.click()}>
+              ↑ Upload screenshot
+            </button>
+          )}
+        </div>
+      </nav>
+
+      <main className={s.main}>
+        {/* ── Stats Strip ── */}
+        <div className={s.statsStrip}>
+          <div className={s.statCard}>
+            <span className={s.statLabel}>Total P&amp;L</span>
+            <span className={`${s.statValue} ${totalProfit >= 0 ? s.pos : s.neg}`}>
+              {totalProfit >= 0 ? "+" : "−"}{Math.abs(totalProfit).toFixed(0)} kr
+            </span>
+            <span className={s.statSub}>{settled.length} settled</span>
+          </div>
+          <div className={s.statCard}>
+            <span className={s.statLabel}>Win Rate</span>
+            <span className={s.statValue}>{winRate}%</span>
+            <span className={s.statSub}>{wins}W / {settled.length - wins}L</span>
+          </div>
+          <div className={s.statCard}>
+            <span className={s.statLabel}>ROI</span>
+            <span className={`${s.statValue} ${roi >= 0 ? s.pos : s.neg}`}>
+              {roi >= 0 ? "+" : ""}{roi.toFixed(1)}%
+            </span>
+            <span className={s.statSub}>{totalInvested.toFixed(0)} kr staked</span>
+          </div>
+          <div className={s.statCard}>
+            <span className={s.statLabel}>Total Bets</span>
+            <span className={s.statValue}>{bets.length}</span>
+            <span className={s.statSub}>all time</span>
+          </div>
+          <div className={s.statCard}>
+            <span className={s.statLabel}>Pending</span>
+            <span className={s.statValue}>{pending}</span>
+            <span className={s.statSub}>awaiting result</span>
+          </div>
+        </div>
+
+        {/* ── P&L Chart ── */}
+        <div className={s.chartPanel}>
+          <div className={s.chartHeader}>
+            <span className={s.chartTitle}>Cumulative P&amp;L</span>
+            <span className={s.chartLegend}>
+              {settled.length} data points
+            </span>
+          </div>
+          <PnlChart bets={bets} />
+        </div>
+
+        {/* ── Filter Bar ── */}
+        <div className={s.filterRow}>
+          {/* Sport filters */}
+          <div className={s.filterGroup}>
+            {allSports.map(sp => (
+              <button
+                key={sp}
+                className={`${s.pill} ${sportFilter === sp ? s.pillActive : ""}`}
+                onClick={() => setSportFilter(sp)}
+              >
+                {sp !== "All" ? (SPORT_ICON[sp] || "🎯") + " " : ""}{sp}
+              </button>
+            ))}
+          </div>
+
+          {allSports.length > 1 && <div className={s.filterDivider} />}
+
+          {/* Status filters */}
+          <div className={s.filterGroup}>
+            {(["all", "pending", "won", "lost"] as StatusFilter[]).map(st => (
+              <button
+                key={st}
+                className={`${s.pill} ${statusFilter === st
+                  ? st === "won" ? s.pillWon : st === "lost" ? s.pillLost : s.pillActive
+                  : ""}`}
+                onClick={() => setStatusFilter(st)}
+              >
+                {st === "all" ? "All" : st.charAt(0).toUpperCase() + st.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Bet Table ── */}
+        <div className={s.tablePanel}>
+          <div className={s.tableHeader}>
+            <span className={s.tableTitle}>Bet History</span>
+            <span className={s.tableCount}>{filtered.length} bets</span>
+          </div>
+
+          {/* Column headings */}
+          <div className={s.colHeads}>
+            <span>Event</span>
+            <span>Selection</span>
+            <span>Odds</span>
+            <span className={s.colRight}>Stake</span>
+            <span className={s.colRight}>Status</span>
+            <span className={s.colRight}>Profit</span>
+            <span className={s.colRight}>Action</span>
+          </div>
+
+          {loading ? (
+            <div className={s.emptyState}>
+              <div className={s.emptyIcon}>⏳</div>
+              <p className={s.emptyText}>Loading bets...</p>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className={s.emptyState}>
+              <div className={s.emptyIcon}>🎯</div>
+              <p className={s.emptyText}>
+                {bets.length === 0
+                  ? "No bets yet — upload a screenshot to get started."
+                  : "No bets match the current filters."}
+              </p>
+            </div>
+          ) : (
+            filtered.map(bet => {
+              const sels = bet.selections as unknown as BetSelection[];
+              const firstSel = sels?.[0];
+              const sport = bet.sport || "Other";
+              const profit = bet.profit ?? (
+                bet.status === "won" ? bet.potential_return - bet.stake :
+                  bet.status === "lost" ? -bet.stake : 0
+              );
+
+              return (
+                <div
+                  key={bet.id}
+                  className={`${s.betRow} ${bet.status === "won" ? s.rowWon :
+                      bet.status === "lost" ? s.rowLost : s.rowPending
+                    }`}
+                >
+                  {/* Event */}
+                  <div className={s.cellEvent}>
+                    <div className={s.cellEventTop}>
+                      <span className={s.sportIcon}>{SPORT_ICON[sport] || "🎯"}</span>
+                      <span className={s.eventName}>
+                        {firstSel?.match || "—"}
+                        {sels?.length > 1 ? ` +${sels.length - 1}` : ""}
+                      </span>
                     </div>
-                    <div className={`${styles.badge} ${styles['badge-' + bet.status]}`}>
-                      {bet.status.toUpperCase()}
-                    </div>
+                    <span className={s.eventDate}>{bet.date}</span>
                   </div>
 
-                  <div className={styles.selections}>
-                    {(bet.selections as unknown as BetSelection[]).map((sel: BetSelection, idx: number) => (
-                      <div key={idx} className={styles.selectionItem}>
-                        <div className={styles.match}>{sel.match}</div>
-                        <div className={styles.pick}>
-                          {sel.selection} {sel.odds ? <span className={styles.oddsBox}>@{sel.odds}</span> : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className={styles.betFooter}>
-                    <div className={styles.betFinancials}>
-                      <span>Stake: <strong>{bet.stake?.toFixed(2) || '0.00'} kr</strong></span>
-                      <span className={styles.totalOdds}>Odds: <strong>{bet.odds?.toFixed(2) || '1.00'}</strong></span>
-                      {(bet.status === 'won' || bet.status === 'lost') ? (
-                        <span>
-                          Profit: <strong className={((bet.profit ?? 0) >= 0) ? styles.positive : styles.negative}>
-                            {((bet.profit ?? 0) >= 0 ? '+' : '')}{(bet.profit ?? 0).toFixed(0)} kr
-                          </strong>
-                        </span>
-                      ) : (
-                        <span>Return: <strong>{bet.potential_return?.toFixed(2) || '0.00'} kr</strong></span>
-                      )}
-                    </div>
-
-                    {bet.status === "pending" && (
-                      <div className={styles.actionButtons}>
-                        <button onClick={() => updateBetStatus(bet.id, 'won')} className={`${styles.btn} ${styles.btnWin}`}>W</button>
-                        <button onClick={() => updateBetStatus(bet.id, 'lost')} className={`${styles.btn} ${styles.btnLoss}`}>L</button>
-                      </div>
+                  {/* Selection */}
+                  <div className={s.cellSel}>
+                    <span className={s.selName}>{firstSel?.selection || "—"}</span>
+                    {bet.market && bet.market !== "Other" && (
+                      <span className={s.marketTag}>{bet.market}</span>
                     )}
                   </div>
+
+                  {/* Odds */}
+                  <span className={s.oddsTag}>{bet.odds?.toFixed(2)}</span>
+
+                  {/* Stake */}
+                  <span className={s.cellNum}>{bet.stake?.toFixed(0)} kr</span>
+
+                  {/* Status */}
+                  <div className={s.cellStatus}>
+                    <span className={`${s.statusBadge} ${bet.status === "won" ? s.badgeWon :
+                        bet.status === "lost" ? s.badgeLost :
+                          bet.status === "void" ? s.badgeVoid : s.badgePending
+                      }`}>
+                      {bet.status.toUpperCase()}
+                    </span>
+                  </div>
+
+                  {/* Profit */}
+                  <span className={`${s.cellNum} ${bet.status === "pending" ? "" :
+                      profit >= 0 ? s.profitPos : s.profitNeg
+                    }`}>
+                    {bet.status === "pending" ? `${bet.potential_return?.toFixed(0)} kr` : fmt(profit)}
+                  </span>
+
+                  {/* Action */}
+                  <div className={s.cellActions}>
+                    {bet.status === "pending" ? (
+                      <>
+                        <button
+                          className={`${s.actionBtn} ${s.btnW}`}
+                          title="Mark as won"
+                          onClick={() => updateStatus(bet.id, "won")}
+                        >W</button>
+                        <button
+                          className={`${s.actionBtn} ${s.btnL}`}
+                          title="Mark as lost"
+                          onClick={() => updateStatus(bet.id, "lost")}
+                        >L</button>
+                      </>
+                    ) : null}
+                  </div>
                 </div>
-              ))}
-            </div>
+              );
+            })
           )}
-        </section>
-      </div>
-    </main>
+        </div>
+      </main>
+    </div>
   );
 }

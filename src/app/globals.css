@@ -1,35 +1,65 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
 :root {
-  --bg-color: #050505;
-  --surface-color: #111111;
-  --surface-border: #222222;
-  --text-primary: #ededed;
-  --text-secondary: #999999;
-  --accent-color: #007aff;
-  --accent-hover: #0062cc;
-  --success-color: #34c759;
-  --danger-color: #ff3b30;
-  
-  --glass-bg: rgba(17, 17, 17, 0.6);
-  --glass-border: rgba(255, 255, 255, 0.1);
-  --glow-color: rgba(0, 122, 255, 0.4);
+  /* Core palette */
+  --bg: #0d0f14;
+  --surface: #13161d;
+  --surface-2: #1a1e29;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-hover: rgba(255, 255, 255, 0.14);
+
+  /* Text */
+  --text-1: #f0f2f7;
+  --text-2: #8b92a5;
+  --text-3: #545968;
+
+  /* Accent */
+  --blue: #3b82f6;
+  --blue-dim: rgba(59, 130, 246, 0.12);
+
+  /* Sentiment */
+  --green: #22c55e;
+  --green-dim: rgba(34, 197, 94, 0.12);
+  --red: #ef4444;
+  --red-dim: rgba(239, 68, 68, 0.12);
+  --amber: #f59e0b;
+  --amber-dim: rgba(245, 158, 11, 0.12);
+  --purple: #a855f7;
+  --purple-dim: rgba(168, 85, 247, 0.12);
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
+
+  /* Keep legacy vars for any component that still uses them */
+  --bg-color: var(--bg);
+  --surface-color: var(--surface);
+  --glass-bg: var(--surface);
+  --glass-border: var(--border);
+  --text-primary: var(--text-1);
+  --text-secondary: var(--text-2);
+  --accent-color: var(--blue);
+  --success-color: var(--green);
+  --danger-color: var(--red);
 }
 
-html, body {
-  max-width: 100vw;
-  overflow-x: hidden;
-  background-color: var(--bg-color);
-  color: var(--text-primary);
-  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
-  margin: 0;
-  padding: 0;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
-  padding: 0;
   margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text-1);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  min-height: 100vh;
 }
 
 a {
@@ -37,20 +67,44 @@ a {
   text-decoration: none;
 }
 
-/* Base utility for beautiful glassmorphism panels */
-.glass-panel {
-  background: var(--glass-bg);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--glass-border);
-  border-radius: 16px;
-  padding: 24px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+button {
+  font-family: inherit;
+  cursor: pointer;
 }
 
-/* Animated gradient text utility */
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface-2);
+  border-radius: 3px;
+}
+
+/* Utility: surface panel */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+/* Keep glass-panel for any older component */
+.glass-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--shadow-md);
+}
+
+/* Gradient text */
 .gradient-text {
-  background: linear-gradient(135deg, #fff 0%, #a0a0a0 100%);
+  background: linear-gradient(135deg, var(--blue) 0%, #818cf8 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
