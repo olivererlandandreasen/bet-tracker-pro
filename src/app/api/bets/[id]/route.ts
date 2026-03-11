@@ -4,10 +4,10 @@ import prisma from "@/lib/db";
 // PATCH /api/bets/[id]
 export async function PATCH(
     request: NextRequest,
-    { params }: { params: { id: string } }
+    { params }: { params: Promise<{ id: string }> }
 ) {
     try {
-        const id = params.id;
+        const { id } = await params;
         const body = await request.json();
         const { status } = body;
 
