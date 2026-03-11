@@ -53,55 +53,83 @@ Required format for each element:
  * Returns an array of { action: 'created' | 'merged', id: string }.
  */
 export async function upsertBet(betData: any): Promise<{ action: 'created' | 'merged' | 'resolved'; id: string }> {
-    const incomingOdds = betData.odds || 1.0;
     const incomingSelections: Array<{ match: string; selection: string }> = betData.selections || [];
+    const incomingDate: string = betData.date || new Date().toISOString().split('T')[0];
     const isSettled = betData.status === 'won' || betData.status === 'lost' || betData.status === 'void';
 
-    // Find pending bets with the same odds (candidates for both merging & resolving)
-    const candidates = await prisma.bet.findMany({
-        where: { status: 'pending', odds: incomingOdds },
-    });
-
-    for (const candidate of candidates) {
-        const existingSelections = candidate.selections as Array<{ match: string; selection: string }>;
-
-        const matches = incomingSelections.filter(inc =>
-            existingSelections.some(ex =>
+    // ── Helper: check if two sets of selections share enough overlap ──
+    const selectionMatches = (existing: Array<{ match: string; selection: string }>) => {
+        const hits = incomingSelections.filter(inc =>
+            existing.some(ex =>
                 normalise(ex.match) === normalise(inc.match) &&
                 normalise(ex.selection) === normalise(inc.selection)
             )
         );
+        return hits.length > 0 && hits.length >= Math.ceil(incomingSelections.length / 2);
+    };
 
-        if (matches.length > 0 && matches.length >= Math.ceil(incomingSelections.length / 2)) {
-            if (isSettled) {
-                // Resolve the pending bet with the result from the new screenshot
-                const profit = betData.profit || (betData.status === 'won'
-                    ? candidate.potential_return - candidate.stake
-                    : -candidate.stake);
+    // ── 1. Look for a PENDING bet with the same selections (any odds) ──
+    const pendingCandidates = await prisma.bet.findMany({
+        where: { status: 'pending' },
+    });
 
-                const updated = await prisma.bet.update({
-                    where: { id: candidate.id },
-                    data: {
-                        status: betData.status,
-                        profit,
-                    },
-                });
-                return { action: 'resolved', id: updated.id };
-            } else {
-                // Merge: add stake and potential_return
-                const updated = await prisma.bet.update({
-                    where: { id: candidate.id },
-                    data: {
-                        stake: candidate.stake + (betData.stake || 0),
-                        potential_return: candidate.potential_return + (betData.potential_return || 0),
-                    },
-                });
-                return { action: 'merged', id: updated.id };
-            }
+    for (const candidate of pendingCandidates) {
+        const existingSelections = candidate.selections as Array<{ match: string; selection: string }>;
+        if (!selectionMatches(existingSelections)) continue;
+
+        if (isSettled) {
+            // Resolve the pending bet with the incoming result
+            const profit = betData.profit || (betData.status === 'won'
+                ? candidate.potential_return - candidate.stake
+                : -candidate.stake);
+            const updated = await prisma.bet.update({
+                where: { id: candidate.id },
+                data: { status: betData.status, profit },
+            });
+            return { action: 'resolved', id: updated.id };
+        } else {
+            // Merge stake into the existing pending bet
+            const updated = await prisma.bet.update({
+                where: { id: candidate.id },
+                data: {
+                    stake: candidate.stake + (betData.stake || 0),
+                    potential_return: candidate.potential_return + (betData.potential_return || 0),
+                },
+            });
+            return { action: 'merged', id: updated.id };
         }
     }
 
-    // No matching pending bet found — create new record
+    // ── 2. Look for an existing SETTLED bet on the same date + selections ──
+    //       (handles uploading the same settled race from multiple accounts)
+    if (isSettled) {
+        const settledCandidates = await prisma.bet.findMany({
+            where: { status: betData.status, date: incomingDate },
+        });
+
+        for (const candidate of settledCandidates) {
+            const existingSelections = candidate.selections as Array<{ match: string; selection: string }>;
+            if (!selectionMatches(existingSelections)) continue;
+
+            // Merge: sum stakes and profits
+            const existingProfit = (candidate as any).profit ?? 0;
+            const incomingProfit = betData.profit || (betData.status === 'won'
+                ? (betData.potential_return || 0) - (betData.stake || 0)
+                : -(betData.stake || 0));
+
+            const updated = await prisma.bet.update({
+                where: { id: candidate.id },
+                data: {
+                    stake: candidate.stake + (betData.stake || 0),
+                    potential_return: candidate.potential_return + (betData.potential_return || 0),
+                    profit: existingProfit + incomingProfit,
+                },
+            });
+            return { action: 'merged', id: updated.id };
+        }
+    }
+
+    // ── 3. No duplicate found — create a new record ──
     const created = await prisma.bet.create({ data: buildData(betData) });
     return { action: 'created', id: created.id };
 }
