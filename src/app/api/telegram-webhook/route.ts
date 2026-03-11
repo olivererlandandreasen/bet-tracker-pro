@@ -95,6 +95,7 @@ export async function POST(req: NextRequest) {
         const results = await Promise.all(betsData.map((b: any) => upsertBet(b)));
         const createdCount = results.filter(r => r.action === 'created').length;
         const mergedCount = results.filter(r => r.action === 'merged').length;
+        const resolvedCount = results.filter(r => r.action === 'resolved').length;
 
         const wonCount = betsData.filter((b: any) => b.status === 'won').length;
         const lostCount = betsData.filter((b: any) => b.status === 'lost').length;
@@ -105,7 +106,9 @@ export async function POST(req: NextRequest) {
         if (lostCount) statusSummary += `❌ Lost: ${lostCount}  `;
         if (pendingCount) statusSummary += `⏳ Pending: ${pendingCount}`;
 
-        let mergeNote = mergedCount > 0 ? `\n_(${mergedCount} stake(s) merged with existing bets)_` : '';
+        let mergeNote = '';
+        if (mergedCount > 0) mergeNote += `\n_(${mergedCount} stake(s) merged with existing bets)_`;
+        if (resolvedCount > 0) mergeNote += `\n_(${resolvedCount} pending bet(s) auto-resolved ✅)_`;
         const replyText = `📊 *${results.length} bet(s) tracked!*\n\n${statusSummary.trim()}${mergeNote}\n\nCheck your dashboard for the full overview!`;
 
         await sendTelegramMessage(chatId, replyText);

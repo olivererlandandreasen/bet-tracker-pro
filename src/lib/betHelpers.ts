@@ -52,17 +52,12 @@ Required format for each element:
  *
  * Returns an array of { action: 'created' | 'merged', id: string }.
  */
-export async function upsertBet(betData: any): Promise<{ action: 'created' | 'merged'; id: string }> {
+export async function upsertBet(betData: any): Promise<{ action: 'created' | 'merged' | 'resolved'; id: string }> {
     const incomingOdds = betData.odds || 1.0;
     const incomingSelections: Array<{ match: string; selection: string }> = betData.selections || [];
+    const isSettled = betData.status === 'won' || betData.status === 'lost' || betData.status === 'void';
 
-    if (betData.status && betData.status !== 'pending') {
-        // Settled bets are never merged — always create
-        const created = await prisma.bet.create({ data: buildData(betData) });
-        return { action: 'created', id: created.id };
-    }
-
-    // Find pending bets with the same odds
+    // Find pending bets with the same odds (candidates for both merging & resolving)
     const candidates = await prisma.bet.findMany({
         where: { status: 'pending', odds: incomingOdds },
     });
@@ -70,7 +65,6 @@ export async function upsertBet(betData: any): Promise<{ action: 'created' | 'me
     for (const candidate of candidates) {
         const existingSelections = candidate.selections as Array<{ match: string; selection: string }>;
 
-        // Check for overlap: at least half of incoming selections appear in the existing bet
         const matches = incomingSelections.filter(inc =>
             existingSelections.some(ex =>
                 normalise(ex.match) === normalise(inc.match) &&
@@ -79,19 +73,35 @@ export async function upsertBet(betData: any): Promise<{ action: 'created' | 'me
         );
 
         if (matches.length > 0 && matches.length >= Math.ceil(incomingSelections.length / 2)) {
-            // Merge: add stake and potential_return
-            const updated = await prisma.bet.update({
-                where: { id: candidate.id },
-                data: {
-                    stake: candidate.stake + (betData.stake || 0),
-                    potential_return: candidate.potential_return + (betData.potential_return || 0),
-                },
-            });
-            return { action: 'merged', id: updated.id };
+            if (isSettled) {
+                // Resolve the pending bet with the result from the new screenshot
+                const profit = betData.profit || (betData.status === 'won'
+                    ? candidate.potential_return - candidate.stake
+                    : -candidate.stake);
+
+                const updated = await prisma.bet.update({
+                    where: { id: candidate.id },
+                    data: {
+                        status: betData.status,
+                        profit,
+                    },
+                });
+                return { action: 'resolved', id: updated.id };
+            } else {
+                // Merge: add stake and potential_return
+                const updated = await prisma.bet.update({
+                    where: { id: candidate.id },
+                    data: {
+                        stake: candidate.stake + (betData.stake || 0),
+                        potential_return: candidate.potential_return + (betData.potential_return || 0),
+                    },
+                });
+                return { action: 'merged', id: updated.id };
+            }
         }
     }
 
-    // No duplicate found — create new record
+    // No matching pending bet found — create new record
     const created = await prisma.bet.create({ data: buildData(betData) });
     return { action: 'created', id: created.id };
 }
