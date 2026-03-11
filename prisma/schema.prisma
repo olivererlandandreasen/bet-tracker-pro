@@ -1,0 +1,20 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Bet {
+  id               String   @id @default(uuid())
+  createdAt        DateTime @default(now())
+  date             String
+  selections       Json
+  odds             Float
+  stake            Float
+  potential_return Float
+  status           String   @default("pending") // 'pending', 'won', 'lost', 'void'
+
+  @@map("bets")
+}
