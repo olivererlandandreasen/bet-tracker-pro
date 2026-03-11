@@ -21,13 +21,17 @@ Return ONLY a valid JSON array (no markdown, no extra text) where EACH ELEMENT i
 IMPORTANT RULES:
 - If the screenshot shows multiple individual bets/rows (e.g. Betfair exchange history), create ONE array element per row.
 - If the screenshot shows a single combined betslip, return an array with ONE element.
-- If the screenshot already shows the outcome (e.g. "Won", "Lost", "Vundet", "Tabt"), set "status" to "won" or "lost" accordingly. Otherwise use "pending".
+- If the screenshot already shows the outcome (e.g. "Won", "Lost", "Vundet", "Tabt"), set "status" to "won" or "lost". Otherwise use "pending".
 - For Betfair bets: "profit" = the net amount shown in the result column (positive for wins, negative for losses). For a loss, set profit to -stake.
 - For pending bets: set profit to 0.
+- "sport": detect the sport from context. Common values: "Horse Racing", "Football", "Tennis", "Basketball", "Golf", "Cricket", "Other".
+- "market": detect the market type. Common values: "Win", "Each Way", "Match Winner", "Over/Under", "Handicap", "Both Teams to Score", "Correct Score", "Outright", "Place", "Other".
 
 Required format for each element:
 {
   "date": "YYYY-MM-DD",
+  "sport": "Horse Racing",
+  "market": "Win",
   "selections": [
     {
       "match": "Event or race name",
@@ -103,6 +107,8 @@ export async function POST(req: NextRequest) {
                         potential_return: betData.potential_return || 0.0,
                         profit: betData.profit || 0.0,
                         status: ['won', 'lost', 'void'].includes(betData.status) ? betData.status : 'pending',
+                        sport: betData.sport || 'Other',
+                        market: betData.market || 'Other',
                     }
                 })
             )
