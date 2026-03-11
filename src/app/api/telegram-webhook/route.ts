@@ -28,8 +28,10 @@ async function sendTelegramMessage(chatId: number, text: string) {
         }),
     });
 }
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
+    let chatIdForError: number | undefined;
     try {
         const body = await req.json();
 
@@ -40,6 +42,7 @@ export async function POST(req: NextRequest) {
 
         const { chat, photo, text } = body.message;
         const chatId = chat.id;
+        chatIdForError = chatId;
 
         // Optional: Restrict to your own user ID for security
         const allowedUserId = process.env.TELEGRAM_ALLOWED_USER_ID;
@@ -157,6 +160,9 @@ Check your dashboard to view the pending bet!`;
 
     } catch (error: any) {
         console.error("Telegram Webhook Error:", error);
+        if (chatIdForError) {
+            await sendTelegramMessage(chatIdForError, `❌ Fejl: Noget gik galt under behandlingen af dit screenshot (\`${error.message}\`). Prøv venligst igen!`);
+        }
         return NextResponse.json({ error: error.message }, { status: 500 });
     }
 }
