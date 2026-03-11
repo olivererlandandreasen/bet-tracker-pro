@@ -88,8 +88,10 @@ export default function Home() {
   const winRate = settledBets.length ? Math.round((bets.filter(b => b.status === "won").length / settledBets.length) * 100) : 0;
 
   const totalProfit = bets.reduce((acc, bet) => {
-    if (bet.status === "won") return acc + (bet.potential_return - bet.stake);
-    if (bet.status === "lost") return acc - bet.stake;
+    if (bet.status === "won" || bet.status === "lost") {
+      // Use stored profit (handles Betfair net payouts correctly)
+      return acc + ((bet as any).profit ?? (bet.status === "won" ? bet.potential_return - bet.stake : -bet.stake));
+    }
     return acc;
   }, 0);
 

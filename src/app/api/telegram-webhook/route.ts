@@ -2,16 +2,44 @@ import { NextRequest, NextResponse } from "next/server";
 import { OpenAI } from "openai";
 import prisma from "@/lib/db";
 
-// Function to parse the AI JSON output safely
+// Parse JSON array from AI response safely
 const parseAIResponse = (content: string) => {
     try {
         const cleaned = content.replace(/```json/g, "").replace(/```/g, "").trim();
-        return JSON.parse(cleaned);
+        const parsed = JSON.parse(cleaned);
+        return Array.isArray(parsed) ? parsed : [parsed];
     } catch (error) {
         console.error("Failed to parse AI response:", error);
         return null;
     }
 };
+
+const SYSTEM_PROMPT = `You are an AI that extracts sports betting data from screenshots.
+Return ONLY a valid JSON array (no markdown, no extra text) where EACH ELEMENT is one individual bet.
+
+IMPORTANT RULES:
+- If the screenshot shows multiple individual bets/rows (e.g. Betfair exchange history), create ONE array element per row.
+- If the screenshot shows a single combined betslip, return an array with ONE element.
+- If the screenshot already shows the outcome (e.g. "Won", "Lost", "Vundet", "Tabt"), set "status" to "won" or "lost". Otherwise use "pending".
+- For Betfair bets: "profit" = the net amount shown in the result column (positive for wins, negative for losses). For a loss, set profit to -stake.
+- For pending bets: set profit to 0.
+
+Required format for each element:
+{
+  "date": "YYYY-MM-DD",
+  "selections": [
+    {
+      "match": "Event or race name",
+      "selection": "Horse or team selected",
+      "odds": 3.9
+    }
+  ],
+  "odds": 3.9,
+  "stake": 500.0,
+  "potential_return": 1950.0,
+  "profit": -500.0,
+  "status": "lost"
+}`;
 
 // Send a simple text message back to the Telegram user
 async function sendTelegramMessage(chatId: number, text: string) {
@@ -28,6 +56,7 @@ async function sendTelegramMessage(chatId: number, text: string) {
         }),
     });
 }
+
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
@@ -35,33 +64,29 @@ export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
 
-        // Safety check for Telegram structure
         if (!body.message) {
-            return NextResponse.json({ success: true }); // Acknowledge other types of updates quietly
+            return NextResponse.json({ success: true });
         }
 
         const { chat, photo, text } = body.message;
         const chatId = chat.id;
         chatIdForError = chatId;
 
-        // Optional: Restrict to your own user ID for security
         const allowedUserId = process.env.TELEGRAM_ALLOWED_USER_ID;
         if (allowedUserId && chatId.toString() !== allowedUserId) {
             console.log(`Unauthorized message from user ID: ${chatId}`);
             return NextResponse.json({ success: true });
         }
 
-        // Checking if the message contains an image (photo array)
         if (!photo || photo.length === 0) {
             if (text === "/start") {
-                await sendTelegramMessage(chatId, "Welcome to Bet Tracker Pro! 📸 Send me a screenshot of your betslip, and I'll automatically parse and track it.");
+                await sendTelegramMessage(chatId, "Welcome to Bet Tracker Pro! 📸 Send me a screenshot of your betslip or Betfair history, and I'll automatically parse and track everything.");
             } else {
-                await sendTelegramMessage(chatId, "Please send a screenshot of a betslip.");
+                await sendTelegramMessage(chatId, "Please send a screenshot of a betslip or Betfair bet history.");
             }
             return NextResponse.json({ success: true });
         }
 
-        // Get the largest photo (highest resolution)
         const fileId = photo[photo.length - 1].file_id;
         const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -76,13 +101,11 @@ export async function POST(req: NextRequest) {
         const fileRes = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`);
         const fileData = await fileRes.json();
 
-        if (!fileData.ok) {
-            throw new Error("Failed to get file path from Telegram");
-        }
+        if (!fileData.ok) throw new Error("Failed to get file path from Telegram");
 
         const filePath = fileData.result.file_path;
 
-        // 2. Download the image file content directly from Telegram
+        // 2. Download image from Telegram
         const imageRes = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`);
         const arrayBuffer = await imageRes.arrayBuffer();
         const base64Image = Buffer.from(arrayBuffer).toString("base64");
@@ -92,70 +115,58 @@ export async function POST(req: NextRequest) {
         const aiResponse = await openai.chat.completions.create({
             model: "gpt-4o",
             messages: [
-                {
-                    role: "system",
-                    content: `You are an AI that extracts sports betting data from screenshots. 
-Extract the following information and return ONLY a valid JSON object with no markdown formatting.
-Required JSON format:
-{
-  "date": "YYYY-MM-DD",
-  "selections": [
-    {
-      "match": "Team A vs Team B",
-      "selection": "Team A to win",
-      "odds": 1.5
-    }
-  ],
-  "odds": 2.5,
-  "stake": 100.0,
-  "potential_return": 250.0
-}
-If any information is unreadable, make your best guess or set it to a reasonable default.`
-                },
+                { role: "system", content: SYSTEM_PROMPT },
                 {
                     role: "user",
                     content: [
-                        { type: "text", text: "Please extract the bet details from this screenshot." },
+                        { type: "text", text: "Please extract all bets from this screenshot." },
                         { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Image}`, detail: "high" } }
                     ]
                 }
             ],
-            max_tokens: 1000,
+            max_tokens: 2000,
             temperature: 0,
         });
 
         const aiContent = aiResponse.choices[0]?.message?.content;
         if (!aiContent) throw new Error("No content returned from OpenAI");
 
-        const betData = parseAIResponse(aiContent);
-        if (!betData) {
+        const betsData = parseAIResponse(aiContent);
+        if (!betsData || betsData.length === 0) {
             await sendTelegramMessage(chatId, "❌ Failed to parse the screenshot. Please try a clearer image.");
             return NextResponse.json({ success: true });
         }
 
-        // 4. Save to Database via Prisma
-        await prisma.bet.create({
-            data: {
-                date: betData.date || new Date().toISOString().split('T')[0],
-                selections: betData.selections || [],
-                odds: betData.odds || 1.0,
-                stake: betData.stake || 0.0,
-                potential_return: betData.potential_return || 0.0,
-                status: 'pending'
-            }
-        });
+        // 4. Save each bet to DB
+        await Promise.all(
+            betsData.map((betData: any) =>
+                prisma.bet.create({
+                    data: {
+                        date: betData.date || new Date().toISOString().split('T')[0],
+                        selections: betData.selections || [],
+                        odds: betData.odds || 1.0,
+                        stake: betData.stake || 0.0,
+                        potential_return: betData.potential_return || 0.0,
+                        profit: betData.profit || 0.0,
+                        status: ['won', 'lost', 'void'].includes(betData.status) ? betData.status : 'pending',
+                    }
+                })
+            )
+        );
 
-        // 5. Success reply
-        const replyText = `✅ *Bet Tracked Successfully!*
-    
-*Stake:* $${betData.stake}
-*Total Odds:* ${betData.odds}
-*Potential Return:* $${betData.potential_return}
+        // 5. Build reply
+        const wonCount = betsData.filter((b: any) => b.status === 'won').length;
+        const lostCount = betsData.filter((b: any) => b.status === 'lost').length;
+        const pendingCount = betsData.filter((b: any) => b.status === 'pending').length;
 
-Check your dashboard to view the pending bet!`;
+        let statusSummary = '';
+        if (wonCount) statusSummary += `✅ Won: ${wonCount}  `;
+        if (lostCount) statusSummary += `❌ Lost: ${lostCount}  `;
+        if (pendingCount) statusSummary += `⏳ Pending: ${pendingCount}`;
+
+        const replyText = `📊 *${betsData.length} bet(s) tracked!*\n\n${statusSummary.trim()}\n\nCheck your dashboard for the full overview!`;
 
         await sendTelegramMessage(chatId, replyText);
-
         return NextResponse.json({ success: true });
 
     } catch (error: any) {

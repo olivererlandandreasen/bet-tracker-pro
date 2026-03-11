@@ -15,6 +15,7 @@ model Bet {
   odds             Float
   stake            Float
   potential_return Float
+  profit           Float    @default(0) // net gain (positive) or loss (negative) for settled bets
   status           String   @default("pending") // 'pending', 'won', 'lost', 'void'
 
   @@map("bets")
