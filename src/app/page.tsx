@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useRef } from "react";
 import styles from "./page.module.css";
-import type { Bet } from "@/lib/db";
+import type { Bet } from "@prisma/client";
+import { BetSelection } from "@/lib/db";
 
 export default function Home() {
   const [bets, setBets] = useState<Bet[]>([]);
@@ -185,7 +186,7 @@ export default function Home() {
                   </div>
 
                   <div className={styles.selections}>
-                    {bet.selections.map((sel, idx) => (
+                    {(bet.selections as unknown as BetSelection[]).map((sel: BetSelection, idx: number) => (
                       <div key={idx} className={styles.selectionItem}>
                         <div className={styles.match}>{sel.match}</div>
                         <div className={styles.pick}>
